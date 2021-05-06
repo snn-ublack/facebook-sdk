@@ -41,7 +41,7 @@ __version__ = version.__version__
 FACEBOOK_GRAPH_URL = "https://graph.facebook.com/"
 FACEBOOK_WWW_URL = "https://www.facebook.com/"
 FACEBOOK_OAUTH_DIALOG_PATH = "dialog/oauth?"
-VALID_API_VERSIONS = ["3.1", "3.2", "3.3", "4.0", "5.0", "6.0", "7.0", "8.0"]
+VALID_API_VERSIONS = ["", "v3.1", "v3.2", "v3.3", "v4.0", "v5.0", "v6.0", "v7.0", "v8.0"]
 VALID_SEARCH_TYPES = ["place", "placetopic"]
 
 
@@ -82,6 +82,7 @@ class GraphAPI(object):
         proxies=None,
         session=None,
         app_secret=None,
+        headers=None,
     ):
         # The default version is only used if the version kwarg does not exist.
         default_version = VALID_API_VERSIONS[0]
@@ -90,26 +91,10 @@ class GraphAPI(object):
         self.timeout = timeout
         self.proxies = proxies
         self.session = session or requests.Session()
+        if headers:
+            self.session.update(headers)
         self.app_secret_hmac = None
-
-        if version:
-            version_regex = re.compile(r"^\d\.\d{1,2}$")
-            match = version_regex.search(str(version))
-            if match is not None:
-                if str(version) not in VALID_API_VERSIONS:
-                    raise GraphAPIError(
-                        "Valid API versions are "
-                        + str(VALID_API_VERSIONS).strip("[]")
-                    )
-                else:
-                    self.version = "v" + str(version)
-            else:
-                raise GraphAPIError(
-                    "Version number should be in the"
-                    " following format: #.# (e.g. 2.0)."
-                )
-        else:
-            self.version = "v" + default_version
+        self.set_version(version);
 
         if app_secret and access_token:
             self.app_secret_hmac = hmac.new(
@@ -118,16 +103,21 @@ class GraphAPI(object):
                 digestmod=hashlib.sha256,
             ).hexdigest()
 
+    def set_version(self, v):
+        self.version = v
+        if v not in VALID_API_VERSIONS or v == VALID_API_VERSIONS[0]:
+            self._based_path = FACEBOOK_GRAPH_URL
+        else:
+            self._based_path = '{0}{1}/'.format(FACEBOOK_GRAPH_URL, v)
+
     def get_permissions(self, user_id):
         """Fetches the permissions object from the graph."""
-        response = self.request(
-            "{0}/{1}/permissions".format(self.version, user_id), {}
-        )["data"]
+        response = self.request("{0}/permissions".format(user_id), {})["data"]
         return {x["permission"] for x in response if x["status"] == "granted"}
 
     def get_object(self, id, **args):
         """Fetches the given object from the graph."""
-        return self.request("{0}/{1}".format(self.version, id), args)
+        return self.request("{0}".format(id), args)
 
     def get_objects(self, ids, **args):
         """Fetches all of the given object from the graph.
@@ -136,7 +126,7 @@ class GraphAPI(object):
         invalid, we raise an exception.
         """
         args["ids"] = ",".join(ids)
-        return self.request(self.version + "/", args)
+        return self.request(args)
 
     def search(self, type, **args):
         """https://developers.facebook.com/docs/places/search"""
@@ -146,13 +136,16 @@ class GraphAPI(object):
             )
 
         args["type"] = type
-        return self.request(self.version + "/search/", args)
+        return self.request("search/", args)
 
     def get_connections(self, id, connection_name, **args):
         """Fetches the connections for given object."""
         return self.request(
-            "{0}/{1}/{2}".format(self.version, id, connection_name), args
+            "{0}/{1}".format(id, connection_name), args
         )
+
+    def get_next_connection(self, id, connection_name, **args):
+        pass
 
     def get_all_connections(self, id, connection_name, **args):
         """Get all pages from a get_connections call
@@ -190,11 +183,7 @@ class GraphAPI(object):
 
         """
         assert self.access_token, "Write operations require an access token"
-        return self.request(
-            "{0}/{1}/{2}".format(self.version, parent_object, connection_name),
-            post_args=data,
-            method="POST",
-        )
+        return self.request("{0}/{1}".format(parent_object, connection_name), post_args=data, method="POST",)
 
     def put_comment(self, object_id, message):
         """Writes the given comment on the given post."""
@@ -206,15 +195,11 @@ class GraphAPI(object):
 
     def delete_object(self, id):
         """Deletes the object with the given ID from the graph."""
-        return self.request(
-            "{0}/{1}".format(self.version, id), method="DELETE"
-        )
+        return self.request("{0}".format(id), method="DELETE")
 
     def delete_request(self, user_id, request_id):
         """Deletes the Request with the given ID for the given user."""
-        return self.request(
-            "{0}_{1}".format(request_id, user_id), method="DELETE"
-        )
+        return self.request("{0}_{1}".format(request_id, user_id), method="DELETE")
 
     def put_photo(self, image, album_path="me/photos", **kwargs):
         """
@@ -224,12 +209,7 @@ class GraphAPI(object):
         album_path - A path representing where the image should be uploaded.
 
         """
-        return self.request(
-            "{0}/{1}".format(self.version, album_path),
-            post_args=kwargs,
-            files={"source": image},
-            method="POST",
-        )
+        return self.request(album_path, post_args=kwargs, files={"source": image}, method="POST")
 
     def get_version(self):
         """Fetches the current version number of the Graph API being used."""
@@ -237,7 +217,7 @@ class GraphAPI(object):
         try:
             response = self.session.request(
                 "GET",
-                FACEBOOK_GRAPH_URL + self.version + "/me",
+                self._based_path + "me",
                 params=args,
                 timeout=self.timeout,
                 proxies=self.proxies,
@@ -253,9 +233,7 @@ class GraphAPI(object):
         except Exception:
             raise GraphAPIError("API version number not available")
 
-    def request(
-        self, path, args=None, post_args=None, files=None, method=None
-    ):
+    def request(self, path, args=None, post_args=None, files=None, method=None):
         """Fetches the given path in the Graph API.
 
         We translate args to a valid query string. If post_args is
@@ -286,7 +264,7 @@ class GraphAPI(object):
         try:
             response = self.session.request(
                 method or "GET",
-                FACEBOOK_GRAPH_URL + path,
+                self._based_path + path,
                 timeout=self.timeout,
                 params=args,
                 data=post_args,
@@ -338,14 +316,9 @@ class GraphAPI(object):
                 "client_id": app_id,
                 "client_secret": app_secret,
             }
+            return self.request("oauth/access_token", args=args)["access_token"]
 
-            return self.request(
-                "{0}/oauth/access_token".format(self.version), args=args
-            )["access_token"]
-
-    def get_access_token_from_code(
-        self, code, redirect_uri, app_id, app_secret
-    ):
+    def get_access_token_from_code(self, code, redirect_uri, app_id, app_secret):
         """Get an access token from the "code" returned from an OAuth dialog.
 
         Returns a dict containing the user-specific access token and its
@@ -359,10 +332,7 @@ class GraphAPI(object):
             "client_secret": app_secret,
         }
 
-        return self.request(
-            "{0}/oauth/access_token".format(self.version), args
-        )
-
+        return self.request("oauth/access_token", args)
     def extend_access_token(self, app_id, app_secret):
         """
         Extends the expiration time of a valid OAuth access token. See
@@ -377,9 +347,7 @@ class GraphAPI(object):
             "fb_exchange_token": self.access_token,
         }
 
-        return self.request(
-            "{0}/oauth/access_token".format(self.version), args=args
-        )
+        return self.request("oauth/access_token", args=args)
 
     def debug_access_token(self, token, app_id, app_secret):
         """
@@ -396,13 +364,11 @@ class GraphAPI(object):
             "input_token": token,
             "access_token": "{0}|{1}".format(app_id, app_secret),
         }
-        return self.request(self.version + "/" + "debug_token", args=args)
+        return self.request("debug_token", args=args)
 
     def get_auth_url(self, app_id, canvas_url, perms=None, **kwargs):
         """Build a URL to create an OAuth dialog."""
-        url = "{0}{1}/{2}".format(
-            FACEBOOK_WWW_URL, self.version, FACEBOOK_OAUTH_DIALOG_PATH
-        )
+        url = "{0}{1}/{2}".format(FACEBOOK_WWW_URL, self.version, FACEBOOK_OAUTH_DIALOG_PATH)
 
         args = {"client_id": app_id, "redirect_uri": canvas_url}
         if perms:
