@@ -140,9 +140,7 @@ class GraphAPI(object):
 
     def get_connections(self, id, connection_name, **args):
         """Fetches the connections for given object."""
-        return self.request(
-            "{0}/{1}".format(id, connection_name), args
-        )
+        return self.request("{0}/{1}".format(id, connection_name), args)
 
     def get_next_connection(self, id, connection_name, **args):
         pass
